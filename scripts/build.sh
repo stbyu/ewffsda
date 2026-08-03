@@ -169,22 +169,36 @@ EOF
 }
 
 compile_custom_packages() {
-  log "Downloading and compiling selected SDK packages"
+  log "Compiling only selected custom packages"
   cd "$SDK_DIR"
-  make download -j"$(nproc)"
 
-  if ! make package/compile -j"$(nproc)" V=s; then
-    log "Parallel build failed; retrying serially for a useful error log"
-    make package/compile -j1 V=sc
+  local targets=(
+    package/feeds/custom/luci-app-ssr-plus/compile
+    package/feeds/custom/shadowsocksr-libev/compile
+    package/feeds/custom/luci-app-guest-wifi/compile
+    package/feeds/custom/gowebdav/compile
+    package/feeds/custom/luci-app-gowebdav/compile
+    package/feeds/custom/wrtbwmon/compile
+    package/feeds/custom/luci-app-wrtbwmon/compile
+  )
+
+  if ! make -j"$(nproc)" "${targets[@]}" V=s; then
+    log "Parallel build failed; retrying serially"
+    make -j1 "${targets[@]}" V=sc
   fi
 
   mkdir -p "$OUTPUT_DIR/custom-ipks"
   require_dir "$SDK_DIR/bin/packages"
-  mapfile -d '' custom_ipks < <(find bin/packages -type f -path '*/custom/*.ipk' -print0)
+
+  mapfile -d '' custom_ipks < <(
+    find bin/packages -type f -path '*/custom/*.ipk' -print0
+  )
+
   if (( ${#custom_ipks[@]} == 0 )); then
     find bin/packages -type f -name '*.ipk' -print >&2 || true
-    fail "No IPKs were produced under the custom feed output directory"
+    fail "No custom-feed IPKs were produced"
   fi
+
   cp -v "${custom_ipks[@]}" "$OUTPUT_DIR/custom-ipks/"
 }
 
