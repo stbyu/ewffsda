@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+unset DOWNLOAD_MIRROR || true
 
-SCRIPT_VERSION="2.0-path-hardened"
+SCRIPT_VERSION="2.1-mirror-safe"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
@@ -46,10 +47,23 @@ checkout_commit() {
   local url="$1"
   local commit="$2"
   local destination="$3"
+  local attempt
 
-  git clone --filter=blob:none --no-checkout "$url" "$destination"
-  git -C "$destination" fetch --depth=1 origin "$commit"
-  git -C "$destination" checkout --detach FETCH_HEAD
+  for attempt in 1 2 3 4 5; do
+    rm -rf "$destination"
+
+    if git clone --filter=blob:none --no-checkout "$url" "$destination" &&
+       git -C "$destination" fetch --depth=1 origin "$commit" &&
+       git -C "$destination" checkout --detach FETCH_HEAD; then
+      return 0
+    fi
+
+    printf 'Git download failed; retry %s/5 after %s seconds\n' \
+      "$attempt" "$((attempt * 15))" >&2
+    sleep "$((attempt * 15))"
+  done
+
+  fail "Unable to download $url after 5 attempts"
 }
 
 copy_package_from_repo() {
@@ -146,6 +160,13 @@ configure_custom_packages() {
   ./scripts/feeds install -a
   ./scripts/feeds install -a -f -p custom
 
+  sed -i \
+    -e '/^CONFIG_PACKAGE_/d' \
+    -e '/CONFIG_ALL_KMODS/d' \
+    -e '/CONFIG_ALL_NONSHARED/d' \
+    -e '/CONFIG_DEVEL/d' \
+    .config
+
   cat >> .config <<'EOF'
 CONFIG_PACKAGE_luci-app-ssr-plus=m
 CONFIG_PACKAGE_shadowsocksr-libev-ssr-local=m
@@ -169,13 +190,22 @@ EOF
 }
 
 compile_custom_packages() {
-  log "Downloading and compiling selected SDK packages"
+  log "Compiling only selected custom packages"
   cd "$SDK_DIR"
-  make download -j"$(nproc)"
 
-  if ! make package/compile -j"$(nproc)" V=s; then
-    log "Parallel build failed; retrying serially for a useful error log"
-    make package/compile -j1 V=sc
+  local targets=(
+    package/feeds/custom/luci-app-ssr-plus/compile
+    package/feeds/custom/shadowsocksr-libev/compile
+    package/feeds/custom/luci-app-guest-wifi/compile
+    package/feeds/custom/gowebdav/compile
+    package/feeds/custom/luci-app-gowebdav/compile
+    package/feeds/custom/wrtbwmon/compile
+    package/feeds/custom/luci-app-wrtbwmon/compile
+  )
+
+  if ! make -j"$(nproc)" "${targets[@]}" V=s; then
+    log "Parallel build failed; retrying selected packages serially"
+    make -j1 "${targets[@]}" V=sc
   fi
 
   mkdir -p "$OUTPUT_DIR/custom-ipks"
@@ -223,7 +253,7 @@ build_firmware() {
   (( ${#imagebuilder_ipks[@]} > 0 )) || fail "No custom IPKs are available for ImageBuilder"
   cp -v "${imagebuilder_ipks[@]}" "$IMAGEBUILDER_DIR/packages/"
 
-  if [[ "${DOWNLOAD_MIRROR:-official}" == "zju" ]]; then
+  if [[ "${IWRT_SOURCE_MIRROR:-official}" == "zju" ]]; then
     sed -i \
       's#https://downloads.immortalwrt.org/#https://mirrors.zju.edu.cn/immortalwrt/#g' \
       "$IMAGEBUILDER_DIR/repositories.conf"
@@ -254,7 +284,7 @@ write_build_metadata() {
     printf 'Target: %s\n' "$TARGET"
     printf 'Profile: %s\n' "$PROFILE"
     printf 'Rootfs: ext4, 1024 MiB\n'
-    printf 'Download mirror: %s\n' "${DOWNLOAD_MIRROR:-official}"
+    printf 'Download mirror: %s\n' "${IWRT_SOURCE_MIRROR:-official}"
     printf 'Flow offloading: %s\n' "${FLOW_OFFLOADING:-disabled}"
     printf 'GitHub run: %s\n' "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown}/actions/runs/${GITHUB_RUN_ID:-unknown}"
   } > build-info.txt
@@ -264,10 +294,10 @@ write_build_metadata() {
 }
 
 main() {
-  case "${DOWNLOAD_MIRROR:-official}" in
+  case "${IWRT_SOURCE_MIRROR:-official}" in
     official) base_url="https://downloads.immortalwrt.org/releases/$VERSION/targets/$TARGET" ;;
     zju) base_url="https://mirrors.zju.edu.cn/immortalwrt/releases/$VERSION/targets/$TARGET" ;;
-    *) printf 'Unsupported DOWNLOAD_MIRROR value: %s\n' "$DOWNLOAD_MIRROR" >&2; exit 2 ;;
+    *) printf 'Unsupported IWRT_SOURCE_MIRROR value: %s\n' "$IWRT_SOURCE_MIRROR" >&2; exit 2 ;;
   esac
 
   [[ "$WORK_DIR" == "$PROJECT_DIR/"* && "$OUTPUT_DIR" == "$PROJECT_DIR/"* ]] || \
