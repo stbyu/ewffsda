@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 unset DOWNLOAD_MIRROR || true
 
-SCRIPT_VERSION="2.1-mirror-safe"
+SCRIPT_VERSION="2.1.1-config-init"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
@@ -159,6 +159,12 @@ configure_custom_packages() {
   ./scripts/feeds update -a
   ./scripts/feeds install -a
   ./scripts/feeds install -a -f -p custom
+
+  if [[ -f config.buildinfo ]]; then
+    cp -f config.buildinfo .config
+  else
+    touch .config
+  fi
 
   sed -i \
     -e '/^CONFIG_PACKAGE_/d' \
