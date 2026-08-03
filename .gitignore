@@ -1,0 +1,4 @@
+/build-work/
+/output/
+*.tar.zst
+

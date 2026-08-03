@@ -1,0 +1,58 @@
+# LuCI and Chinese UI
+luci
+luci-ssl
+luci-i18n-base-zh-cn
+luci-theme-argon
+luci-app-package-manager
+luci-app-uhttpd
+
+# Storage and file sharing
+luci-app-filemanager
+luci-app-samba4
+samba4-server
+block-mount
+kmod-fs-ext4
+kmod-fs-vfat
+kmod-usb-storage
+usbutils
+e2fsprogs
+fdisk
+lsblk
+
+# Network services and monitoring
+luci-app-ddns
+ddns-scripts
+luci-app-upnp
+luci-app-nlbwmon
+luci-app-sqm
+sqm-scripts
+luci-app-wol
+luci-app-commands
+luci-app-watchcat
+watchcat
+
+# VPN
+luci-proto-wireguard
+rpcd-mod-wireguard
+wireguard-tools
+luci-app-openvpn
+openvpn-openssl
+
+# firewall4 / nftables acceleration
+firewall4
+kmod-nft-offload
+kmod-nft-fullcone
+
+# Utilities
+curl
+wget-ssl
+ca-bundle
+
+# Custom packages compiled by the SDK step
+luci-app-ssr-plus
+luci-app-guest-wifi
+gowebdav
+luci-app-gowebdav
+wrtbwmon
+luci-app-wrtbwmon
+
