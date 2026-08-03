@@ -54,7 +54,7 @@ jobs:
 
       - name: Build custom IPKs and firmware
         env:
-          DOWNLOAD_MIRROR: ${{ inputs.mirror }}
+          IWRT_SOURCE_MIRROR: ${{ inputs.mirror }}
           FLOW_OFFLOADING: ${{ inputs.flow_offloading }}
         run: bash scripts/build.sh
 
@@ -66,4 +66,3 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
-
