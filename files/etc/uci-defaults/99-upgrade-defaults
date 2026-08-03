@@ -1,0 +1,17 @@
+#!/bin/sh
+
+uci -q set firewall.@defaults[0].flow_offloading='__FLOW_SOFTWARE__'
+uci -q set firewall.@defaults[0].flow_offloading_hw='__FLOW_HARDWARE__'
+uci -q set firewall.@defaults[0].fullcone='1'
+
+uci -q set dhcp.@dnsmasq[0].cachesize='8000'
+uci -q set dhcp.@dnsmasq[0].min_cache_ttl='3600'
+uci -q set dhcp.@dnsmasq[0].ednspacket_max='1232'
+
+uci -q set luci.main.mediaurlbase='/luci-static/argon'
+
+uci commit firewall
+uci commit dhcp
+uci commit luci
+exit 0
+
