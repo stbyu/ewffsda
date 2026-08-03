@@ -70,7 +70,9 @@ prepare_custom_feed() {
   rsync -a --exclude=.git --exclude=.github \
     "$SOURCE_DIR/helloworld/" "$CUSTOM_FEED_DIR/"
 
-  cp -a "$SOURCE_DIR/guest-wifi/luci-app-guest-wifi" "$CUSTOM_FEED_DIR/"
+  mkdir -p "$CUSTOM_FEED_DIR/luci-app-guest-wifi"
+  rsync -a --exclude=.git --exclude=.github \
+    "$SOURCE_DIR/guest-wifi/" "$CUSTOM_FEED_DIR/luci-app-guest-wifi/"
   cp -a "$SOURCE_DIR/openwrt-ext/op-webdav/gowebdav" "$CUSTOM_FEED_DIR/"
   cp -a "$SOURCE_DIR/openwrt-ext/op-webdav/luci-app-gowebdav" "$CUSTOM_FEED_DIR/"
   cp -a "$SOURCE_DIR/wrtbwmon/wrtbwmon" "$CUSTOM_FEED_DIR/"
