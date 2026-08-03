@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_VERSION="2.0-path-hardened"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
@@ -22,6 +23,19 @@ log() {
   printf '\n[%s] %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
 
+fail() {
+  printf '\nERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+require_file() {
+  [[ -f "$1" ]] || fail "Required file not found: $1"
+}
+
+require_dir() {
+  [[ -d "$1" ]] || fail "Required directory not found: $1"
+}
+
 download_file() {
   local url="$1"
   local destination="$2"
@@ -36,6 +50,41 @@ checkout_commit() {
   git clone --filter=blob:none --no-checkout "$url" "$destination"
   git -C "$destination" fetch --depth=1 origin "$commit"
   git -C "$destination" checkout --detach FETCH_HEAD
+}
+
+copy_package_from_repo() {
+  local repository_root="$1"
+  local package_name="$2"
+  local source_path=""
+  local display_path=""
+  local destination="$CUSTOM_FEED_DIR/$package_name"
+
+  require_dir "$repository_root"
+
+  if [[ -f "$repository_root/$package_name/Makefile" ]]; then
+    source_path="$repository_root/$package_name"
+  else
+    source_path="$(find "$repository_root" -mindepth 1 -maxdepth 6 \
+      -type f -path "*/$package_name/Makefile" -printf '%h\n' -quit)"
+  fi
+
+  if [[ -z "$source_path" && -f "$repository_root/Makefile" ]]; then
+    source_path="$repository_root"
+  fi
+
+  if [[ -z "$source_path" ]]; then
+    printf 'Repository layout under %s:\n' "$repository_root" >&2
+    find "$repository_root" -maxdepth 4 -type f -name Makefile -print >&2 || true
+    fail "Could not locate package '$package_name' in $repository_root"
+  fi
+
+  [[ ! -e "$destination" ]] || fail "Duplicate custom package directory: $destination"
+  mkdir -p "$destination"
+  rsync -a --exclude=.git --exclude=.github "$source_path/" "$destination/"
+  require_file "$destination/Makefile"
+  display_path="${source_path#"$repository_root"}"
+  display_path="${display_path#/}"
+  log "Located $package_name at ${display_path:-repository root}"
 }
 
 prepare_custom_feed() {
@@ -70,13 +119,14 @@ prepare_custom_feed() {
   rsync -a --exclude=.git --exclude=.github \
     "$SOURCE_DIR/helloworld/" "$CUSTOM_FEED_DIR/"
 
-  mkdir -p "$CUSTOM_FEED_DIR/luci-app-guest-wifi"
-  rsync -a --exclude=.git --exclude=.github \
-    "$SOURCE_DIR/guest-wifi/" "$CUSTOM_FEED_DIR/luci-app-guest-wifi/"
-  cp -a "$SOURCE_DIR/openwrt-ext/op-webdav/gowebdav" "$CUSTOM_FEED_DIR/"
-  cp -a "$SOURCE_DIR/openwrt-ext/op-webdav/luci-app-gowebdav" "$CUSTOM_FEED_DIR/"
-  cp -a "$SOURCE_DIR/wrtbwmon/wrtbwmon" "$CUSTOM_FEED_DIR/"
-  cp -a "$SOURCE_DIR/luci-app-wrtbwmon/luci-app-wrtbwmon" "$CUSTOM_FEED_DIR/"
+  require_file "$CUSTOM_FEED_DIR/luci-app-ssr-plus/Makefile"
+  require_file "$CUSTOM_FEED_DIR/shadowsocksr-libev/Makefile"
+
+  copy_package_from_repo "$SOURCE_DIR/guest-wifi" luci-app-guest-wifi
+  copy_package_from_repo "$SOURCE_DIR/openwrt-ext" gowebdav
+  copy_package_from_repo "$SOURCE_DIR/openwrt-ext" luci-app-gowebdav
+  copy_package_from_repo "$SOURCE_DIR/wrtbwmon" wrtbwmon
+  copy_package_from_repo "$SOURCE_DIR/luci-app-wrtbwmon" luci-app-wrtbwmon
 
   if grep -q '+iptables' "$CUSTOM_FEED_DIR/wrtbwmon/Makefile"; then
     sed -i 's/+iptables/+iptables-nft/g' "$CUSTOM_FEED_DIR/wrtbwmon/Makefile"
@@ -87,22 +137,35 @@ configure_custom_packages() {
   log "Installing feeds and selecting custom packages"
   cd "$SDK_DIR"
 
+  require_file "$SDK_DIR/Makefile"
+  require_file "$SDK_DIR/feeds.conf.default"
+  [[ -x "$SDK_DIR/scripts/feeds" ]] || fail "SDK scripts/feeds is missing or not executable"
+
   printf '\nsrc-link custom %s\n' "$CUSTOM_FEED_DIR" >> feeds.conf.default
   ./scripts/feeds update -a
   ./scripts/feeds install -a
   ./scripts/feeds install -a -f -p custom
 
-  touch .config
-  ./scripts/config --module PACKAGE_luci-app-ssr-plus
-  ./scripts/config --module PACKAGE_shadowsocksr-libev-ssr-local
-  ./scripts/config --module PACKAGE_shadowsocksr-libev-ssr-redir
-  ./scripts/config --module PACKAGE_shadowsocksr-libev-ssr-server
-  ./scripts/config --module PACKAGE_luci-app-guest-wifi
-  ./scripts/config --module PACKAGE_gowebdav
-  ./scripts/config --module PACKAGE_luci-app-gowebdav
-  ./scripts/config --module PACKAGE_wrtbwmon
-  ./scripts/config --module PACKAGE_luci-app-wrtbwmon
+  cat >> .config <<'EOF'
+CONFIG_PACKAGE_luci-app-ssr-plus=m
+CONFIG_PACKAGE_shadowsocksr-libev-ssr-local=m
+CONFIG_PACKAGE_shadowsocksr-libev-ssr-redir=m
+CONFIG_PACKAGE_shadowsocksr-libev-ssr-server=m
+CONFIG_PACKAGE_luci-app-guest-wifi=m
+CONFIG_PACKAGE_gowebdav=m
+CONFIG_PACKAGE_luci-app-gowebdav=m
+CONFIG_PACKAGE_wrtbwmon=m
+CONFIG_PACKAGE_luci-app-wrtbwmon=m
+EOF
   make defconfig
+
+  local symbol
+  for symbol in \
+    luci-app-ssr-plus luci-app-guest-wifi gowebdav luci-app-gowebdav \
+    wrtbwmon luci-app-wrtbwmon; do
+    grep -Eq "^CONFIG_PACKAGE_${symbol}=[my]$" .config || \
+      fail "Package symbol was not accepted by make defconfig: $symbol"
+  done
 }
 
 compile_custom_packages() {
@@ -116,10 +179,11 @@ compile_custom_packages() {
   fi
 
   mkdir -p "$OUTPUT_DIR/custom-ipks"
+  require_dir "$SDK_DIR/bin/packages"
   mapfile -d '' custom_ipks < <(find bin/packages -type f -path '*/custom/*.ipk' -print0)
   if (( ${#custom_ipks[@]} == 0 )); then
-    printf 'No custom-feed IPKs were produced.\n' >&2
-    exit 1
+    find bin/packages -type f -name '*.ipk' -print >&2 || true
+    fail "No IPKs were produced under the custom feed output directory"
   fi
   cp -v "${custom_ipks[@]}" "$OUTPUT_DIR/custom-ipks/"
 }
@@ -136,18 +200,28 @@ prepare_overlay() {
   esac
 
   mkdir -p "$WORK_DIR/files"
+  require_dir "$PROJECT_DIR/files"
+  require_file "$PROJECT_DIR/files/etc/uci-defaults/99-upgrade-defaults"
   cp -a "$PROJECT_DIR/files/." "$WORK_DIR/files/"
   sed -i \
     -e "s/__FLOW_SOFTWARE__/$software/g" \
     -e "s/__FLOW_HARDWARE__/$hardware/g" \
     "$WORK_DIR/files/etc/uci-defaults/99-upgrade-defaults"
   chmod +x "$WORK_DIR/files/etc/uci-defaults/99-upgrade-defaults"
+  if grep -R -q '__FLOW_' "$WORK_DIR/files"; then
+    fail "An unresolved flow-offloading placeholder remains in the overlay"
+  fi
 }
 
 build_firmware() {
   log "Building Raspberry Pi 3 ext4 firmware with ImageBuilder"
+  require_file "$IMAGEBUILDER_DIR/Makefile"
+  require_file "$IMAGEBUILDER_DIR/repositories.conf"
+  require_file "$PROJECT_DIR/packages.txt"
   mkdir -p "$IMAGEBUILDER_DIR/packages" "$OUTPUT_DIR/firmware"
-  cp -v "$OUTPUT_DIR/custom-ipks/"*.ipk "$IMAGEBUILDER_DIR/packages/"
+  mapfile -d '' imagebuilder_ipks < <(find "$OUTPUT_DIR/custom-ipks" -maxdepth 1 -type f -name '*.ipk' -print0)
+  (( ${#imagebuilder_ipks[@]} > 0 )) || fail "No custom IPKs are available for ImageBuilder"
+  cp -v "${imagebuilder_ipks[@]}" "$IMAGEBUILDER_DIR/packages/"
 
   if [[ "${DOWNLOAD_MIRROR:-official}" == "zju" ]]; then
     sed -i \
@@ -170,9 +244,13 @@ build_firmware() {
 write_build_metadata() {
   log "Writing checksums and build information"
   cd "$OUTPUT_DIR"
+  mapfile -d '' factory_images < <(find firmware -maxdepth 1 -type f -name '*rpi-3-ext4-factory.img.gz' -print0)
+  (( ${#factory_images[@]} > 0 )) || fail "ImageBuilder completed without an ext4 factory image"
+
   find firmware custom-ipks -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
   {
     printf 'ImmortalWrt version: %s\n' "$VERSION"
+    printf 'Build script: %s\n' "$SCRIPT_VERSION"
     printf 'Target: %s\n' "$TARGET"
     printf 'Profile: %s\n' "$PROFILE"
     printf 'Rootfs: ext4, 1024 MiB\n'
@@ -181,7 +259,7 @@ write_build_metadata() {
     printf 'GitHub run: %s\n' "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-unknown}/actions/runs/${GITHUB_RUN_ID:-unknown}"
   } > build-info.txt
 
-  gzip -t firmware/*rpi-3-ext4-factory.img.gz
+  gzip -t "${factory_images[@]}"
   find . -maxdepth 2 -type f -printf '%p %k KiB\n' | sort
 }
 
@@ -192,6 +270,8 @@ main() {
     *) printf 'Unsupported DOWNLOAD_MIRROR value: %s\n' "$DOWNLOAD_MIRROR" >&2; exit 2 ;;
   esac
 
+  [[ "$WORK_DIR" == "$PROJECT_DIR/"* && "$OUTPUT_DIR" == "$PROJECT_DIR/"* ]] || \
+    fail "Refusing to clean paths outside the project directory"
   rm -rf "$WORK_DIR" "$OUTPUT_DIR"
   mkdir -p "$DOWNLOAD_DIR" "$SOURCE_DIR" "$OUTPUT_DIR"
 
@@ -201,10 +281,11 @@ main() {
   printf '%s  %s\n' "$SDK_SHA256" "$DOWNLOAD_DIR/$SDK_FILE" | sha256sum -c -
   printf '%s  %s\n' "$IMAGEBUILDER_SHA256" "$DOWNLOAD_DIR/$IMAGEBUILDER_FILE" | sha256sum -c -
 
-  tar --zstd -xf "$DOWNLOAD_DIR/$SDK_FILE" -C "$WORK_DIR"
-  tar --zstd -xf "$DOWNLOAD_DIR/$IMAGEBUILDER_FILE" -C "$WORK_DIR"
-  mv "$WORK_DIR/${SDK_FILE%.tar.zst}" "$SDK_DIR"
-  mv "$WORK_DIR/${IMAGEBUILDER_FILE%.tar.zst}" "$IMAGEBUILDER_DIR"
+  mkdir -p "$SDK_DIR" "$IMAGEBUILDER_DIR"
+  tar --zstd -xf "$DOWNLOAD_DIR/$SDK_FILE" -C "$SDK_DIR" --strip-components=1
+  tar --zstd -xf "$DOWNLOAD_DIR/$IMAGEBUILDER_FILE" -C "$IMAGEBUILDER_DIR" --strip-components=1
+  require_file "$SDK_DIR/Makefile"
+  require_file "$IMAGEBUILDER_DIR/Makefile"
 
   prepare_custom_feed
   configure_custom_packages
@@ -215,4 +296,3 @@ main() {
 }
 
 main "$@"
-
