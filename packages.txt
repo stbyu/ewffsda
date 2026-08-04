@@ -53,6 +53,8 @@ ttyd
 # MediaTek USB Wi-Fi adapters
 kmod-usb-core
 kmod-usb2
+# Switch this Mercury UD13 from 0e8d:2870 ZeroCD mode to 2c4e:0103 WLAN mode
+usb-modeswitch
 kmod-mt76-usb
 kmod-mt7601u
 kmod-mt76x0u
