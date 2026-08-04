@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 unset DOWNLOAD_MIRROR || true
 
-SCRIPT_VERSION="3.2.2-base-feed-usbmode-fix"
+SCRIPT_VERSION="3.2.3-base-feed-source-path-fix"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
@@ -153,11 +153,11 @@ configure_custom_packages() {
   ./scripts/feeds update -a
 
   # Core SDK source packages appear under the base feed after feeds update.
-  require_dir "$SDK_DIR/feeds/base/usbmode/data"
+  require_dir "$SDK_DIR/feeds/base/package/utils/usbmode/data"
 
   # This Mercury UD13 / MT7612U first presents itself as a virtual driver CD
   # (0e8d:2870). Teach usbmode to eject it into Wi-Fi mode (2c4e:0103).
-  cat > "$SDK_DIR/feeds/base/usbmode/data/0e8d-2870" <<'EOF'
+  cat > "$SDK_DIR/feeds/base/package/utils/usbmode/data/0e8d-2870" <<'EOF'
 TargetVendor=0x2c4e
 TargetProductList="0103"
 StandardEject=1
