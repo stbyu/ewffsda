@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 unset DOWNLOAD_MIRROR || true
 
-SCRIPT_VERSION="3.1-prebuilt-openclash"
+SCRIPT_VERSION="3.2-mtk-modeswitch-retry"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
@@ -147,7 +147,16 @@ configure_custom_packages() {
 
   require_file "$SDK_DIR/Makefile"
   require_file "$SDK_DIR/feeds.conf.default"
+  require_dir "$SDK_DIR/package/utils/usbmode/data"
   [[ -x "$SDK_DIR/scripts/feeds" ]] || fail "SDK scripts/feeds is missing or not executable"
+
+  # This Mercury UD13 / MT7612U first presents itself as a virtual driver CD
+  # (0e8d:2870).  Teach usbmode to eject it into Wi-Fi mode (2c4e:0103).
+  cat > "$SDK_DIR/package/utils/usbmode/data/0e8d-2870" <<'EOF'
+TargetVendor=0x2c4e
+TargetProductList="0103"
+StandardEject=1
+EOF
 
   printf '\nsrc-link custom %s\n' "$CUSTOM_FEED_DIR" >> feeds.conf.default
   ./scripts/feeds update -a
@@ -173,13 +182,14 @@ CONFIG_PACKAGE_gowebdav=m
 CONFIG_PACKAGE_luci-app-gowebdav=m
 CONFIG_PACKAGE_wrtbwmon=m
 CONFIG_PACKAGE_luci-app-wrtbwmon=m
+CONFIG_PACKAGE_usb-modeswitch=m
 EOF
   make defconfig
 
   local symbol
   for symbol in \
     luci-app-guest-wifi gowebdav luci-app-gowebdav \
-    wrtbwmon luci-app-wrtbwmon; do
+    wrtbwmon luci-app-wrtbwmon usb-modeswitch; do
     grep -Eq "^CONFIG_PACKAGE_${symbol}=[my]$" .config || \
       fail "Package symbol was not accepted by make defconfig: $symbol"
   done
@@ -190,6 +200,7 @@ compile_custom_packages() {
   cd "$SDK_DIR"
 
   local targets=(
+    package/utils/usbmode/compile
     package/feeds/custom/luci-app-guest-wifi/compile
     package/feeds/custom/gowebdav/compile
     package/feeds/custom/luci-app-gowebdav/compile
@@ -210,6 +221,13 @@ compile_custom_packages() {
     fail "No IPKs were produced under the custom feed output directory"
   fi
   cp -v "${custom_ipks[@]}" "$OUTPUT_DIR/custom-ipks/"
+
+  mapfile -d '' usbmode_ipks < <(find bin -type f -name 'usb-modeswitch_*.ipk' -print0)
+  if (( ${#usbmode_ipks[@]} == 0 )); then
+    find bin -type f -iname '*usb*mode*.ipk' -print >&2 || true
+    fail "usb-modeswitch was selected but its IPK was not produced"
+  fi
+  cp -v "${usbmode_ipks[@]}" "$OUTPUT_DIR/custom-ipks/"
 }
 
 fetch_openclash_ipk() {
@@ -241,6 +259,90 @@ prepare_overlay() {
   require_dir "$PROJECT_DIR/files"
   require_file "$PROJECT_DIR/files/etc/uci-defaults/99-upgrade-defaults"
   cp -a "$PROJECT_DIR/files/." "$WORK_DIR/files/"
+
+  log "Adding delayed MT7612U ZeroCD mode-switch retries"
+  mkdir -p \
+    "$WORK_DIR/files/usr/sbin" \
+    "$WORK_DIR/files/etc/init.d" \
+    "$WORK_DIR/files/etc/hotplug.d/usb" \
+    "$WORK_DIR/files/etc/uci-defaults"
+
+  cat > "$WORK_DIR/files/usr/sbin/mtk-wifi-modeswitch-retry" <<'EOF'
+#!/bin/sh
+
+lock_dir=/tmp/mtk-wifi-modeswitch.lock
+
+mkdir "$lock_dir" 2>/dev/null || exit 0
+cleanup() {
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+for retry_delay in 2 5 10; do
+  sleep "$retry_delay"
+
+  if lsusb 2>/dev/null | grep -qi '2c4e:0103'; then
+    logger -t mtk-wifi-modeswitch \
+      'MT7612U is in Wi-Fi mode as 2c4e:0103; no further retry is needed'
+    exit 0
+  fi
+
+  if lsusb 2>/dev/null | grep -qi '0e8d:2870'; then
+    logger -t mtk-wifi-modeswitch \
+      "Trying StandardEject for 0e8d:2870 after ${retry_delay}s delay"
+    /sbin/usbmode -s >/dev/null 2>&1 || true
+  else
+    logger -t mtk-wifi-modeswitch \
+      'Waiting for MT7612U USB re-enumeration before the next retry'
+  fi
+done
+
+if lsusb 2>/dev/null | grep -qi '2c4e:0103'; then
+  logger -t mtk-wifi-modeswitch 'MT7612U mode switch completed as 2c4e:0103'
+  exit 0
+fi
+
+logger -t mtk-wifi-modeswitch \
+  'MT7612U did not appear as 2c4e:0103 after all retries'
+exit 1
+EOF
+
+  cat > "$WORK_DIR/files/etc/init.d/mtk-wifi-modeswitch" <<'EOF'
+#!/bin/sh /etc/rc.common
+
+START=21
+USE_PROCD=0
+
+start() {
+  /usr/sbin/mtk-wifi-modeswitch-retry &
+}
+EOF
+
+  cat > "$WORK_DIR/files/etc/hotplug.d/usb/90-mtk-wifi-modeswitch" <<'EOF'
+#!/bin/sh
+
+[ "$ACTION" = "add" ] || exit 0
+
+case "$PRODUCT" in
+  e8d/2870/*|0e8d/2870/*)
+    /usr/sbin/mtk-wifi-modeswitch-retry &
+    ;;
+esac
+EOF
+
+  cat > "$WORK_DIR/files/etc/uci-defaults/98-mtk-wifi-modeswitch" <<'EOF'
+#!/bin/sh
+
+/etc/init.d/mtk-wifi-modeswitch enable
+/etc/init.d/mtk-wifi-modeswitch start
+exit 0
+EOF
+
+  chmod 0755 \
+    "$WORK_DIR/files/usr/sbin/mtk-wifi-modeswitch-retry" \
+    "$WORK_DIR/files/etc/init.d/mtk-wifi-modeswitch" \
+    "$WORK_DIR/files/etc/hotplug.d/usb/90-mtk-wifi-modeswitch" \
+    "$WORK_DIR/files/etc/uci-defaults/98-mtk-wifi-modeswitch"
 
   log "Adding pinned Mihomo ARM64 core for OpenClash"
   download_file \
