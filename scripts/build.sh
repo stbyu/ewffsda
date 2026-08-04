@@ -2,11 +2,10 @@
 set -Eeuo pipefail
 unset DOWNLOAD_MIRROR || true
 
-SCRIPT_VERSION="3.2.1-sdk-usbmode-source-fix"
+SCRIPT_VERSION="3.2.2-base-feed-usbmode-fix"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
-IMMORTALWRT_SOURCE_COMMIT="5fa11a1b5689154d296fdacf1e16a7abccb897b9"
 OPENCLASH_VERSION="0.47.133"
 OPENCLASH_PACKAGE_COMMIT="49ab37d60dc9b825850805174ec2406d96a8eef0"
 OPENCLASH_IPK_SHA256="c2490630043ea7e3db91a8f0d079088bc39c6aab4dc283d292f302064f891b90"
@@ -72,35 +71,6 @@ checkout_commit() {
   fail "Unable to download $url after 5 attempts"
 }
 
-checkout_sparse_path() {
-  local url="$1"
-  local commit="$2"
-  local sparse_path="$3"
-  local destination="$4"
-  local attempt
-
-  for attempt in 1 2 3 4 5; do
-    rm -rf "$destination"
-    mkdir -p "$destination"
-
-    if git -C "$destination" init -q &&
-       git -C "$destination" remote add origin "$url" &&
-       git -C "$destination" sparse-checkout init --cone &&
-       git -C "$destination" sparse-checkout set "$sparse_path" &&
-       git -C "$destination" fetch --depth=1 origin "$commit" &&
-       git -C "$destination" checkout --detach FETCH_HEAD; then
-      require_dir "$destination/$sparse_path"
-      return 0
-    fi
-
-    printf 'Sparse Git download failed; retry %s/5 after %s seconds\n' \
-      "$attempt" "$((attempt * 15))" >&2
-    sleep "$((attempt * 15))"
-  done
-
-  fail "Unable to download $sparse_path from $url after 5 attempts"
-}
-
 copy_package_from_repo() {
   local repository_root="$1"
   local package_name="$2"
@@ -139,12 +109,6 @@ copy_package_from_repo() {
 prepare_custom_feed() {
   log "Fetching pinned third-party package sources"
 
-  checkout_sparse_path \
-    https://github.com/immortalwrt/immortalwrt.git \
-    "$IMMORTALWRT_SOURCE_COMMIT" \
-    package/utils/usbmode \
-    "$SOURCE_DIR/immortalwrt"
-
   checkout_commit \
     https://github.com/kenzok78/luci-app-guest-wifi.git \
     58dcd53a04d8790b75e93da2df3876b54a701374 \
@@ -166,7 +130,6 @@ prepare_custom_feed() {
     "$SOURCE_DIR/luci-app-wrtbwmon"
 
   mkdir -p "$CUSTOM_FEED_DIR"
-  copy_package_from_repo "$SOURCE_DIR/immortalwrt/package/utils" usbmode
   copy_package_from_repo "$SOURCE_DIR/guest-wifi" luci-app-guest-wifi
   copy_package_from_repo "$SOURCE_DIR/openwrt-ext" gowebdav
   copy_package_from_repo "$SOURCE_DIR/openwrt-ext" luci-app-gowebdav
@@ -184,19 +147,22 @@ configure_custom_packages() {
 
   require_file "$SDK_DIR/Makefile"
   require_file "$SDK_DIR/feeds.conf.default"
-  require_dir "$CUSTOM_FEED_DIR/usbmode/data"
   [[ -x "$SDK_DIR/scripts/feeds" ]] || fail "SDK scripts/feeds is missing or not executable"
 
+  printf '\nsrc-link custom %s\n' "$CUSTOM_FEED_DIR" >> feeds.conf.default
+  ./scripts/feeds update -a
+
+  # Core SDK source packages appear under the base feed after feeds update.
+  require_dir "$SDK_DIR/feeds/base/usbmode/data"
+
   # This Mercury UD13 / MT7612U first presents itself as a virtual driver CD
-  # (0e8d:2870).  Teach usbmode to eject it into Wi-Fi mode (2c4e:0103).
-  cat > "$CUSTOM_FEED_DIR/usbmode/data/0e8d-2870" <<'EOF'
+  # (0e8d:2870). Teach usbmode to eject it into Wi-Fi mode (2c4e:0103).
+  cat > "$SDK_DIR/feeds/base/usbmode/data/0e8d-2870" <<'EOF'
 TargetVendor=0x2c4e
 TargetProductList="0103"
 StandardEject=1
 EOF
 
-  printf '\nsrc-link custom %s\n' "$CUSTOM_FEED_DIR" >> feeds.conf.default
-  ./scripts/feeds update -a
   ./scripts/feeds install -a
   ./scripts/feeds install -a -f -p custom
 
@@ -237,7 +203,7 @@ compile_custom_packages() {
   cd "$SDK_DIR"
 
   local targets=(
-    package/feeds/custom/usbmode/compile
+    package/feeds/base/usbmode/compile
     package/feeds/custom/luci-app-guest-wifi/compile
     package/feeds/custom/gowebdav/compile
     package/feeds/custom/luci-app-gowebdav/compile
