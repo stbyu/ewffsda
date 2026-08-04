@@ -47,12 +47,32 @@ kmod-nft-fullcone
 curl
 wget-ssl
 ca-bundle
+luci-app-ttyd
+ttyd
 
-# Custom packages compiled by the SDK step
-luci-app-ssr-plus
+# MediaTek USB Wi-Fi adapters
+kmod-usb-core
+kmod-usb2
+kmod-mt76-usb
+kmod-mt7601u
+kmod-mt76x0u
+kmod-mt76x2u
+kmod-mt7921u
+kmod-mt7925u
+iw
+iwinfo
+wireless-regdb
+
+# OpenClash transparent proxy (Mihomo core is embedded by build.sh)
+-dnsmasq
+dnsmasq-full
+kmod-tun
+kmod-nft-tproxy
+luci-app-openclash
+
+# Other custom packages compiled by the SDK step
 luci-app-guest-wifi
 gowebdav
 luci-app-gowebdav
 wrtbwmon
 luci-app-wrtbwmon
-
