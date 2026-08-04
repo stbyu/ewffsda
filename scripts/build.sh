@@ -2,10 +2,15 @@
 set -Eeuo pipefail
 unset DOWNLOAD_MIRROR || true
 
-SCRIPT_VERSION="2.1.1-config-init"
+SCRIPT_VERSION="3.1-prebuilt-openclash"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
+OPENCLASH_VERSION="0.47.133"
+OPENCLASH_PACKAGE_COMMIT="49ab37d60dc9b825850805174ec2406d96a8eef0"
+OPENCLASH_IPK_SHA256="b78ab1487e08369abd048dc607725034074df627ef9df09b6d90ff1a0d7718ff"
+OPENCLASH_CORE_COMMIT="78173a221ed2a546417e0de37ec19cd52fa3ec7a"
+OPENCLASH_CORE_SHA256="6ea51ed56e8970917ca65faf2194efcd71e4e0b89878f0900d8134c39659f031"
 SDK_FILE="immortalwrt-sdk-24.10.6-bcm27xx-bcm2710_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
 IMAGEBUILDER_FILE="immortalwrt-imagebuilder-24.10.6-bcm27xx-bcm2710.Linux-x86_64.tar.zst"
 SDK_SHA256="6f6db9fb0f0a72ebb40f3bab4997935187c5e40803bad9e5f376dab719d347af"
@@ -105,11 +110,6 @@ prepare_custom_feed() {
   log "Fetching pinned third-party package sources"
 
   checkout_commit \
-    https://github.com/fw876/helloworld.git \
-    744f2a4a01e87cfba4cbf973e65525902c39de2a \
-    "$SOURCE_DIR/helloworld"
-
-  checkout_commit \
     https://github.com/kenzok78/luci-app-guest-wifi.git \
     58dcd53a04d8790b75e93da2df3876b54a701374 \
     "$SOURCE_DIR/guest-wifi"
@@ -130,12 +130,6 @@ prepare_custom_feed() {
     "$SOURCE_DIR/luci-app-wrtbwmon"
 
   mkdir -p "$CUSTOM_FEED_DIR"
-  rsync -a --exclude=.git --exclude=.github \
-    "$SOURCE_DIR/helloworld/" "$CUSTOM_FEED_DIR/"
-
-  require_file "$CUSTOM_FEED_DIR/luci-app-ssr-plus/Makefile"
-  require_file "$CUSTOM_FEED_DIR/shadowsocksr-libev/Makefile"
-
   copy_package_from_repo "$SOURCE_DIR/guest-wifi" luci-app-guest-wifi
   copy_package_from_repo "$SOURCE_DIR/openwrt-ext" gowebdav
   copy_package_from_repo "$SOURCE_DIR/openwrt-ext" luci-app-gowebdav
@@ -174,10 +168,6 @@ configure_custom_packages() {
     .config
 
   cat >> .config <<'EOF'
-CONFIG_PACKAGE_luci-app-ssr-plus=m
-CONFIG_PACKAGE_shadowsocksr-libev-ssr-local=m
-CONFIG_PACKAGE_shadowsocksr-libev-ssr-redir=m
-CONFIG_PACKAGE_shadowsocksr-libev-ssr-server=m
 CONFIG_PACKAGE_luci-app-guest-wifi=m
 CONFIG_PACKAGE_gowebdav=m
 CONFIG_PACKAGE_luci-app-gowebdav=m
@@ -188,7 +178,7 @@ EOF
 
   local symbol
   for symbol in \
-    luci-app-ssr-plus luci-app-guest-wifi gowebdav luci-app-gowebdav \
+    luci-app-guest-wifi gowebdav luci-app-gowebdav \
     wrtbwmon luci-app-wrtbwmon; do
     grep -Eq "^CONFIG_PACKAGE_${symbol}=[my]$" .config || \
       fail "Package symbol was not accepted by make defconfig: $symbol"
@@ -200,8 +190,6 @@ compile_custom_packages() {
   cd "$SDK_DIR"
 
   local targets=(
-    package/feeds/custom/luci-app-ssr-plus/compile
-    package/feeds/custom/shadowsocksr-libev/compile
     package/feeds/custom/luci-app-guest-wifi/compile
     package/feeds/custom/gowebdav/compile
     package/feeds/custom/luci-app-gowebdav/compile
@@ -224,9 +212,23 @@ compile_custom_packages() {
   cp -v "${custom_ipks[@]}" "$OUTPUT_DIR/custom-ipks/"
 }
 
+fetch_openclash_ipk() {
+  local ipk_name="luci-app-openclash_${OPENCLASH_VERSION}_all.ipk"
+  local destination="$OUTPUT_DIR/custom-ipks/$ipk_name"
+
+  log "Downloading pinned official OpenClash IPK"
+  mkdir -p "$OUTPUT_DIR/custom-ipks"
+  download_file \
+    "https://raw.githubusercontent.com/vernesong/OpenClash/$OPENCLASH_PACKAGE_COMMIT/master/$ipk_name" \
+    "$destination"
+  printf '%s  %s\n' "$OPENCLASH_IPK_SHA256" "$destination" | sha256sum -c -
+}
+
 prepare_overlay() {
   local software=0
   local hardware=0
+  local core_archive="$DOWNLOAD_DIR/clash-linux-arm64.tar.gz"
+  local core_dir="$WORK_DIR/files/etc/openclash/core"
 
   case "${FLOW_OFFLOADING:-disabled}" in
     disabled) ;;
@@ -239,6 +241,18 @@ prepare_overlay() {
   require_dir "$PROJECT_DIR/files"
   require_file "$PROJECT_DIR/files/etc/uci-defaults/99-upgrade-defaults"
   cp -a "$PROJECT_DIR/files/." "$WORK_DIR/files/"
+
+  log "Adding pinned Mihomo ARM64 core for OpenClash"
+  download_file \
+    "https://raw.githubusercontent.com/vernesong/OpenClash/$OPENCLASH_CORE_COMMIT/master/meta/clash-linux-arm64.tar.gz" \
+    "$core_archive"
+  printf '%s  %s\n' "$OPENCLASH_CORE_SHA256" "$core_archive" | sha256sum -c -
+  mkdir -p "$core_dir"
+  tar --no-same-owner -xzf "$core_archive" -C "$core_dir"
+  require_file "$core_dir/clash"
+  mv "$core_dir/clash" "$core_dir/clash_meta"
+  chmod 0755 "$core_dir/clash_meta"
+
   sed -i \
     -e "s/__FLOW_SOFTWARE__/$software/g" \
     -e "s/__FLOW_HARDWARE__/$hardware/g" \
@@ -326,6 +340,7 @@ main() {
   prepare_custom_feed
   configure_custom_packages
   compile_custom_packages
+  fetch_openclash_ipk
   prepare_overlay
   build_firmware
   write_build_metadata
