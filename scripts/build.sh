@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 unset DOWNLOAD_MIRROR || true
 
-SCRIPT_VERSION="3.2.3-base-feed-source-path-fix"
+SCRIPT_VERSION="3.2.5-native-usbmode-only"
 VERSION="24.10.6"
 TARGET="bcm27xx/bcm2710"
 PROFILE="rpi-3"
@@ -151,18 +151,6 @@ configure_custom_packages() {
 
   printf '\nsrc-link custom %s\n' "$CUSTOM_FEED_DIR" >> feeds.conf.default
   ./scripts/feeds update -a
-
-  # Core SDK source packages appear under the base feed after feeds update.
-  require_dir "$SDK_DIR/feeds/base/package/utils/usbmode/data"
-
-  # This Mercury UD13 / MT7612U first presents itself as a virtual driver CD
-  # (0e8d:2870). Teach usbmode to eject it into Wi-Fi mode (2c4e:0103).
-  cat > "$SDK_DIR/feeds/base/package/utils/usbmode/data/0e8d-2870" <<'EOF'
-TargetVendor=0x2c4e
-TargetProductList="0103"
-StandardEject=1
-EOF
-
   ./scripts/feeds install -a
   ./scripts/feeds install -a -f -p custom
 
@@ -262,90 +250,6 @@ prepare_overlay() {
   require_dir "$PROJECT_DIR/files"
   require_file "$PROJECT_DIR/files/etc/uci-defaults/99-upgrade-defaults"
   cp -a "$PROJECT_DIR/files/." "$WORK_DIR/files/"
-
-  log "Adding delayed MT7612U ZeroCD mode-switch retries"
-  mkdir -p \
-    "$WORK_DIR/files/usr/sbin" \
-    "$WORK_DIR/files/etc/init.d" \
-    "$WORK_DIR/files/etc/hotplug.d/usb" \
-    "$WORK_DIR/files/etc/uci-defaults"
-
-  cat > "$WORK_DIR/files/usr/sbin/mtk-wifi-modeswitch-retry" <<'EOF'
-#!/bin/sh
-
-lock_dir=/tmp/mtk-wifi-modeswitch.lock
-
-mkdir "$lock_dir" 2>/dev/null || exit 0
-cleanup() {
-  rmdir "$lock_dir" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-for retry_delay in 2 5 10; do
-  sleep "$retry_delay"
-
-  if lsusb 2>/dev/null | grep -qi '2c4e:0103'; then
-    logger -t mtk-wifi-modeswitch \
-      'MT7612U is in Wi-Fi mode as 2c4e:0103; no further retry is needed'
-    exit 0
-  fi
-
-  if lsusb 2>/dev/null | grep -qi '0e8d:2870'; then
-    logger -t mtk-wifi-modeswitch \
-      "Trying StandardEject for 0e8d:2870 after ${retry_delay}s delay"
-    /sbin/usbmode -s >/dev/null 2>&1 || true
-  else
-    logger -t mtk-wifi-modeswitch \
-      'Waiting for MT7612U USB re-enumeration before the next retry'
-  fi
-done
-
-if lsusb 2>/dev/null | grep -qi '2c4e:0103'; then
-  logger -t mtk-wifi-modeswitch 'MT7612U mode switch completed as 2c4e:0103'
-  exit 0
-fi
-
-logger -t mtk-wifi-modeswitch \
-  'MT7612U did not appear as 2c4e:0103 after all retries'
-exit 1
-EOF
-
-  cat > "$WORK_DIR/files/etc/init.d/mtk-wifi-modeswitch" <<'EOF'
-#!/bin/sh /etc/rc.common
-
-START=21
-USE_PROCD=0
-
-start() {
-  /usr/sbin/mtk-wifi-modeswitch-retry &
-}
-EOF
-
-  cat > "$WORK_DIR/files/etc/hotplug.d/usb/90-mtk-wifi-modeswitch" <<'EOF'
-#!/bin/sh
-
-[ "$ACTION" = "add" ] || exit 0
-
-case "$PRODUCT" in
-  e8d/2870/*|0e8d/2870/*)
-    /usr/sbin/mtk-wifi-modeswitch-retry &
-    ;;
-esac
-EOF
-
-  cat > "$WORK_DIR/files/etc/uci-defaults/98-mtk-wifi-modeswitch" <<'EOF'
-#!/bin/sh
-
-/etc/init.d/mtk-wifi-modeswitch enable
-/etc/init.d/mtk-wifi-modeswitch start
-exit 0
-EOF
-
-  chmod 0755 \
-    "$WORK_DIR/files/usr/sbin/mtk-wifi-modeswitch-retry" \
-    "$WORK_DIR/files/etc/init.d/mtk-wifi-modeswitch" \
-    "$WORK_DIR/files/etc/hotplug.d/usb/90-mtk-wifi-modeswitch" \
-    "$WORK_DIR/files/etc/uci-defaults/98-mtk-wifi-modeswitch"
 
   log "Adding pinned Mihomo ARM64 core for OpenClash"
   download_file \
